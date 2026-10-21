@@ -80,3 +80,11 @@ Notes:
 `os/android/android_args/` holds the settings profiles used during development:
 `perf.txt` (older handheld profile), `debug.txt` (verbose logging) and `rewrite_off.txt`
 (disables the 0.5 renderer CPU changes).
+
+## Continuous integration
+
+`.github/workflows/build-android.yml` runs these steps on a `windows-latest` GitHub runner (Git
+Bash, NDK r29, `STRIP=1`) on every push and pull request, and on demand from the Actions tab. The
+APK is attached to the run as the artifact `LibertyRecomp-android-<commit>`. It is signed with the
+runner's throwaway debug key, so a device holding a build from another machine has to uninstall
+that one first (see the note above).

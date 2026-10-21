@@ -147,10 +147,25 @@ bool CreateDedicatedAllocationImage(const VulkanDevice* vulkan_device,
 bool RewriteUnsupportedClipCullDistances(const VulkanDevice* vulkan_device, const uint32_t* code,
                                          size_t code_size_bytes, std::vector<uint32_t>& rewritten);
 
+// For devices without Vulkan 1.2 (a Vulkan 1.1 device with VK_KHR_spirv_1_4,
+// such as the stock ARM Mali-G610 driver of Android 12): lowers a SPIR-V 1.5
+// or 1.6 module to the highest version the device accepts, which must be at
+// least 1.4. The capabilities that became core in SPIR-V 1.5 get their
+// OpExtension back. Returns false when the module needs no change or cannot
+// be lowered (it uses SPIR-V 1.6 or viewport/layer functionality the target
+// lacks); the original code is used then.
+bool LowerSpirvVersion(const VulkanDevice* vulkan_device, const uint32_t* code,
+                       size_t code_size_bytes, std::vector<uint32_t>& lowered);
+
 // Explicitly accepting const uint32_t* to make sure attention is paid to the
 // alignment where this is called for safety on different host architectures.
 inline VkShaderModule CreateShaderModule(const VulkanDevice* const vulkan_device,
                                          const uint32_t* code, size_t code_size_bytes) {
+  std::vector<uint32_t> lowered;
+  if (LowerSpirvVersion(vulkan_device, code, code_size_bytes, lowered)) {
+    code = lowered.data();
+    code_size_bytes = lowered.size() * sizeof(uint32_t);
+  }
   std::vector<uint32_t> rewritten;
   if (RewriteUnsupportedClipCullDistances(vulkan_device, code, code_size_bytes, rewritten)) {
     code = rewritten.data();

@@ -32,8 +32,11 @@ import java.util.zip.ZipFile;
  * bundled Mesa Turnip build, "system" forwards to /system/lib64/libvulkan.so.</p>
  *
  * <p>Turnip is the default: the stock Adreno 650 driver exposes a Vulkan 1.1
- * device and the native renderer needs 1.2. {@code driver.txt} next to
- * {@code args.txt} selects "system" instead.</p>
+ * device without the Vulkan 1.2 extensions the native renderer needs.
+ * {@code driver.txt} next to {@code args.txt} selects "system" instead. A
+ * Vulkan 1.1 driver that has those extensions (the stock Mali-G610 driver of
+ * Android 12, for example) is usable as well; the proxy reports per device
+ * whether it is ("native_ready") and what is missing otherwise.</p>
  *
  * <p>Ported from andrewnakas/skate3-android (MIT), which took it from
  * AlanConstantino/skate3-pocket; native/PROVENANCE.md has the details.</p>
@@ -66,7 +69,7 @@ final class DriverBridge {
                                     String driverFilename, boolean custom,
                                     boolean allowSystemFallback);
 
-    /** VK_API_VERSION_1_2: the native renderer's minimum. */
+    /** VK_API_VERSION_1_2: the minimum when the proxy does not report native_ready. */
     private static final long VULKAN_1_2 = (1L << 22) | (2L << 12);
 
     /** Loads and initializes the proxy. Returns the native status JSON. */
@@ -149,19 +152,32 @@ final class DriverBridge {
         org.json.JSONArray devices = json.optJSONArray("devices");
         long best = 0;
         String name = "unknown GPU";
+        String missing = "";
         for (int i = 0; devices != null && i < devices.length(); ++i) {
             JSONObject device = devices.optJSONObject(i);
             if (device == null) continue;
             long api = device.optLong("api_version", 0);
+            if (device.has("native_ready")) {
+                // Vulkan 1.2, or Vulkan 1.1 with the extensions promoted to 1.2,
+                // plus dynamic rendering - checked by the proxy.
+                if (device.optBoolean("native_ready", false)) return null;
+            } else if (api >= VULKAN_1_2) {
+                return null;
+            }
             if (api >= best) {
                 best = api;
                 name = device.optString("name", name);
+                missing = device.optString("missing", "");
             }
         }
-        if (best >= VULKAN_1_2) return null;
         String fallbackFrom = json.optString("fallback_from");
-        return "This device's GPU (" + name + ") only offers Vulkan " + (best >> 22) + "."
-                + ((best >> 12) & 0x3FF) + " through its own driver, and the game needs Vulkan 1.2."
+        String version = (best >> 22) + "." + ((best >> 12) & 0x3FF);
+        return "This device's GPU (" + name + ") offers Vulkan " + version
+                + " through its own driver, which "
+                + (missing.isEmpty()
+                        ? "is older than the game needs (Vulkan 1.2, or Vulkan 1.1 with the "
+                                + "Vulkan 1.2 extensions)."
+                        : "lacks what the game needs: " + missing + ".")
                 + (fallbackFrom.isEmpty()
                         ? "\n\nIf driver.txt says \"system\", delete it to use the bundled Turnip driver."
                         : "\n\nThe selected custom driver (the bundled Turnip unless driver.txt names "
