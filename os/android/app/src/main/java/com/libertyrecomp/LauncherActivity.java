@@ -319,7 +319,8 @@ public class LauncherActivity extends Activity {
         right.addView(actions, matchWrap(dp(12)));
 
         right.addView(text("Turnip packages for AdrenoTools (a zip with a .so and meta.json) "
-                + "work here. The game needs Vulkan 1.2; if a driver cannot start, the game "
+                + "work here. The game needs Vulkan 1.2, or Vulkan 1.1 with the Vulkan 1.2 "
+                + "extensions; if a driver cannot start, the game "
                 + "falls back to the device's own driver.", 12, R.color.picker_muted),
                 matchWrap(dp(10)));
 
@@ -782,7 +783,7 @@ public class LauncherActivity extends Activity {
         addDriver(DriverBridge.TURNIP, "Turnip 26.3.0-R6 (bundled)",
                 "Recommended for Adreno 6xx/7xx");
         addDriver(DriverBridge.SYSTEM, "System driver",
-                "The device's own Vulkan driver (needs Vulkan 1.2)");
+                "The device's own Vulkan driver (needs Vulkan 1.2 or 1.1 with its extensions)");
         File[] packages = customRoot().listFiles();
         if (packages != null) {
             Arrays.sort(packages);

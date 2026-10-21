@@ -160,7 +160,11 @@ the same thing and prints the result.
 
 ## Driver selection: `driver.txt`
 
-The game needs Vulkan 1.2. The APK bundles a Mesa Turnip build (StevenMXZ 26.3.0-R6, for
+The game needs Vulkan 1.2, or a Vulkan 1.1 driver that offers the Vulkan 1.2 functionality as
+extensions (`VK_EXT_descriptor_indexing`, `VK_KHR_buffer_device_address`, `VK_KHR_spirv_1_4` and
+`VK_KHR_shader_float_controls`). The renderer uses dynamic rendering; on a driver without Vulkan 1.3
+or `VK_KHR_dynamic_rendering` (the stock Mali-G610 driver of Android 12, for example) the app's
+Vulkan proxy translates it into render passes (log tag `LibertyDriver`). The APK bundles a Mesa Turnip build (StevenMXZ 26.3.0-R6, for
 Adreno 6xx/7xx) and loads it through libadrenotools. Without root, this replaces the system driver
 for this app only.
 
@@ -182,7 +186,7 @@ Otherwise the folder must contain exactly one `.so`.
 
 If the bundled Turnip or a custom driver fails to load, the app falls back to the system driver
 (since 0.5.6.2) and records both in the log (tag `LibertyDriver`) and in `files/last_launch.txt`.
-If the system driver offers less than Vulkan 1.2, the app shows a dialog with the reason and
+If the system driver lacks any of these, the app shows a dialog naming what is missing and
 exits. An explicit `system` has nothing to fall back to.
 
 The file may be saved with any editor: upper and lower case, surrounding spaces and the invisible
@@ -214,6 +218,9 @@ call fails (0.5.7.4 and newer), so this is only a workaround to try if the game 
 
 Any other Mesa/Turnip variable works the same way, for example `MESA_SHADER_CACHE_DISABLE=true` or
 `TU_DEBUG=sysmem,noubwc`.
+
+`LIBERTY_EMULATE_DYNAMIC_RENDERING=1` makes the proxy translate dynamic rendering into render
+passes even on a driver that supports it, to compare the two on the same device.
 
 ## Logs
 

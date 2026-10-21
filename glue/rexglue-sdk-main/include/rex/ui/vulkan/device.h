@@ -148,6 +148,9 @@ class VulkanDevice {
     bool shaderStorageImageWriteWithoutFormat = false;
 
     // Vulkan 1.2 features used by Liberty's precompiled native shader cache.
+    // On a Vulkan 1.1 device they come from the extensions promoted to 1.2
+    // (VK_EXT_descriptor_indexing, VK_KHR_buffer_device_address,
+    // VK_KHR_timeline_semaphore, VK_KHR_shader_float16_int8).
     bool runtimeDescriptorArray = false;
     bool descriptorBindingPartiallyBound = false;
     bool descriptorBindingSampledImageUpdateAfterBind = false;
@@ -243,7 +246,11 @@ class VulkanDevice {
     // Has optional features not implied by this being true.
     bool ext_1_1_KHR_sampler_ycbcr_conversion = false;  // #157
     bool ext_1_1_KHR_bind_memory2 = false;              // #158
+    bool ext_1_2_KHR_timeline_semaphore = false;        // #208
     bool ext_1_2_KHR_spirv_1_4 = false;                 // #237
+    // Has optional features not implied by these being true.
+    bool ext_1_2_EXT_descriptor_indexing = false;       // #162
+    bool ext_1_2_KHR_buffer_device_address = false;     // #258
     bool ext_EXT_memory_budget = false;                 // #238
     // Has optional features not implied by these being true.
     bool ext_EXT_depth_clip_control = false;
@@ -272,8 +279,12 @@ class VulkanDevice {
 #include <rex/ui/vulkan/functions/device_khr_swapchain.inc>
     // VK_KHR_get_memory_requirements2 (#147, promoted to 1.1)
 #include <rex/ui/vulkan/functions/device_1_1_khr_get_memory_requirements2.inc>
-    // Vulkan 1.2 core.
-#include <rex/ui/vulkan/functions/device_1_2.inc>
+    // VK_KHR_maintenance3 (#169, promoted to 1.1)
+#include <rex/ui/vulkan/functions/device_1_1_khr_maintenance3.inc>
+    // VK_KHR_buffer_device_address (#258, promoted to 1.2)
+#include <rex/ui/vulkan/functions/device_1_2_khr_buffer_device_address.inc>
+    // VK_KHR_timeline_semaphore (#208, promoted to 1.2)
+#include <rex/ui/vulkan/functions/device_1_2_khr_timeline_semaphore.inc>
     // VK_KHR_bind_memory2 (#158, promoted to 1.1)
 #include <rex/ui/vulkan/functions/device_1_1_khr_bind_memory2.inc>
     // VK_KHR_maintenance4 (#414, promoted to 1.3)

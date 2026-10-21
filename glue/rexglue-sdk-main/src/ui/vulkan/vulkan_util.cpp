@@ -12,7 +12,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <functional>
+#include <iterator>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -261,6 +264,105 @@ VkPipeline CreateComputePipeline(const VulkanDevice* const vulkan_device, VkPipe
       CreateComputePipeline(vulkan_device, layout, shader, specialization_info, entry_point);
   vulkan_device->functions().vkDestroyShaderModule(vulkan_device->device(), shader, nullptr);
   return pipeline;
+}
+
+bool LowerSpirvVersion(const VulkanDevice* const vulkan_device, const uint32_t* const code,
+                       const size_t code_size_bytes, std::vector<uint32_t>& lowered) {
+  constexpr uint32_t kMagic = 0x07230203;
+  constexpr uint32_t kVersion1_4 = 0x00010400, kVersion1_5 = 0x00010500,
+                     kVersion1_6 = 0x00010600;
+  constexpr uint32_t kOpExtension = 10, kOpCapability = 17;
+
+  const size_t word_count = code_size_bytes / sizeof(uint32_t);
+  if (word_count < 5 || code[0] != kMagic) {
+    return false;
+  }
+  const uint32_t api_version = vulkan_device->properties().apiVersion;
+  uint32_t target_version;
+  if (api_version >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
+    target_version = kVersion1_6;
+  } else if (api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+    target_version = kVersion1_5;
+  } else if (vulkan_device->extensions().ext_1_2_KHR_spirv_1_4) {
+    target_version = kVersion1_4;
+  } else {
+    return false;
+  }
+  const uint32_t version = code[1];
+  if (version <= target_version || version > kVersion1_6) {
+    return false;
+  }
+
+  // Capabilities that are core in SPIR-V 1.5 but need an extension in 1.4.
+  struct ExtensionForCapabilities {
+    const char* name;
+    uint32_t first_capability;
+    uint32_t last_capability;
+  };
+  static constexpr ExtensionForCapabilities kExtensions1_5[] = {
+      {"SPV_KHR_8bit_storage", 4448, 4450},
+      {"SPV_EXT_descriptor_indexing", 5301, 5312},
+      {"SPV_KHR_vulkan_memory_model", 5345, 5346},
+      {"SPV_KHR_physical_storage_buffer", 5347, 5347},
+  };
+  bool extension_needed[std::size(kExtensions1_5)] = {};
+  std::vector<std::string> present_extensions;
+  size_t insert_at = 5;
+  for (size_t i = 5; i < word_count;) {
+    const uint32_t opcode = code[i] & 0xFFFF;
+    const uint32_t length = code[i] >> 16;
+    if (!length || i + length > word_count) {
+      return false;
+    }
+    if (opcode == kOpCapability && length >= 2) {
+      const uint32_t capability = code[i + 1];
+      // SPIR-V 1.6: DemoteToHelperInvocation, DotProduct*. SPIR-V 1.5:
+      // ShaderLayer and ShaderViewportIndex, which below 1.5 need
+      // VK_EXT_shader_viewport_index_layer.
+      if (capability == 5379 || (capability >= 6016 && capability <= 6019) ||
+          (target_version < kVersion1_5 && (capability == 69 || capability == 70))) {
+        return false;
+      }
+      if (target_version < kVersion1_5) {
+        for (size_t j = 0; j < std::size(kExtensions1_5); ++j) {
+          if (capability >= kExtensions1_5[j].first_capability &&
+              capability <= kExtensions1_5[j].last_capability) {
+            extension_needed[j] = true;
+          }
+        }
+      }
+      insert_at = i + length;
+    } else if (opcode == kOpExtension && length >= 2) {
+      present_extensions.emplace_back(
+          reinterpret_cast<const char*>(code + i + 1),
+          strnlen(reinterpret_cast<const char*>(code + i + 1),
+                  (length - 1) * sizeof(uint32_t)));
+    } else if (opcode == 4416) {
+      // OpTerminateInvocation, core in SPIR-V 1.6.
+      return false;
+    }
+    i += length;
+  }
+
+  lowered.assign(code, code + insert_at);
+  lowered[1] = target_version;
+  for (size_t j = 0; j < std::size(kExtensions1_5); ++j) {
+    const std::string name = kExtensions1_5[j].name;
+    if (!extension_needed[j] ||
+        std::find(present_extensions.begin(), present_extensions.end(), name) !=
+            present_extensions.end()) {
+      continue;
+    }
+    // The literal string includes the terminating null and is padded to a
+    // whole word.
+    const uint32_t string_words = uint32_t(name.size() / sizeof(uint32_t) + 1);
+    const size_t instruction = lowered.size();
+    lowered.resize(instruction + 1 + string_words, 0);
+    lowered[instruction] = ((1 + string_words) << 16) | kOpExtension;
+    std::memcpy(lowered.data() + instruction + 1, name.data(), name.size());
+  }
+  lowered.insert(lowered.end(), code + insert_at, code + word_count);
+  return true;
 }
 
 bool RewriteUnsupportedClipCullDistances(const VulkanDevice* const vulkan_device,

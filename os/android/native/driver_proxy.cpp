@@ -5,6 +5,7 @@
 #include <adrenotools/driver.h>
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
+#include "dynamic_rendering.h"
 #include <sys/stat.h>
 #include <limits.h>
 
@@ -22,6 +23,7 @@
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
 EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo*, const VkAllocationCallbacks*, VkInstance*);
 EXPORT VKAPI_ATTR void VKAPI_CALL vkDestroyInstance(VkInstance, const VkAllocationCallbacks*);
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char*);
 
 namespace {
 constexpr const char* kTag = "LibertyDriver";
@@ -193,6 +195,100 @@ bool ProbeSystemIdentity(std::string& identity) {
   return found;
 }
 
+// What the native renderer needs from a device that the API version alone
+// does not say (mirrors VulkanDevice::CreateIfSupported with native shaders and
+// dynamic rendering, which the proxy emulates on drivers without it). Vulkan 1.2 functionality may come from the extensions
+// promoted to 1.2 on a Vulkan 1.1 device - the stock ARM Mali-G610 driver of
+// Android 12 reports 1.1 but has nearly all of them. Returns the missing items,
+// comma-separated; empty when the device is usable.
+std::string MissingNativeRequirements(VkInstance instance, VkPhysicalDevice device,
+                                      uint32_t requested_api,
+                                      const VkPhysicalDeviceProperties& basic) {
+  const auto features2 =
+      Get<PFN_vkGetPhysicalDeviceFeatures2>(instance, "vkGetPhysicalDeviceFeatures2");
+  const auto enumerate_extensions = Get<PFN_vkEnumerateDeviceExtensionProperties>(
+      instance, "vkEnumerateDeviceExtensionProperties");
+  if (requested_api < VK_API_VERSION_1_1 || basic.apiVersion < VK_API_VERSION_1_1) {
+    return "Vulkan 1.1";
+  }
+  if (!features2 || !enumerate_extensions) {
+    return "vkGetPhysicalDeviceFeatures2";
+  }
+  std::vector<VkExtensionProperties> extensions;
+  uint32_t extension_count = 0;
+  if (enumerate_extensions(device, nullptr, &extension_count, nullptr) == VK_SUCCESS &&
+      extension_count) {
+    extensions.resize(extension_count);
+    if (enumerate_extensions(device, nullptr, &extension_count, extensions.data()) != VK_SUCCESS) {
+      extension_count = 0;
+    }
+    extensions.resize(extension_count);
+  }
+  const auto has = [&](const char* name) {
+    return std::any_of(extensions.begin(), extensions.end(), [name](const VkExtensionProperties& e) {
+      return std::strcmp(e.extensionName, name) == 0;
+    });
+  };
+
+  std::string missing;
+  const auto add = [&missing](const char* what) {
+    if (!missing.empty()) missing += ", ";
+    missing += what;
+  };
+  const bool core_1_2 = basic.apiVersion >= VK_API_VERSION_1_2;
+  const bool core_1_3 = basic.apiVersion >= VK_API_VERSION_1_3;
+  const bool descriptor_indexing = core_1_2 || has(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+  const bool buffer_device_address = core_1_2 || has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+  const bool dynamic_rendering = core_1_3 || has(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  // Without it the proxy translates dynamic rendering into render passes.
+  const bool dynamic_rendering_emulated =
+      !dynamic_rendering && dynamic_rendering::Emulated(instance, device, g_get);
+  if (!descriptor_indexing) add(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+  if (!buffer_device_address) add(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+  if (!core_1_2 && !has(VK_KHR_SPIRV_1_4_EXTENSION_NAME)) add(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+  if (!core_1_2 && !has(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
+    add(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+  }
+  if (!dynamic_rendering && !dynamic_rendering_emulated) {
+    add(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  }
+
+  // The promoted extension structures are valid on Vulkan 1.2+ devices too.
+  VkPhysicalDeviceFeatures2 supported{};
+  supported.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing{};
+  indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceBufferDeviceAddressFeatures address{};
+  address.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  VkPhysicalDeviceDynamicRenderingFeatures rendering{};
+  rendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+  if (descriptor_indexing) {
+    indexing.pNext = supported.pNext;
+    supported.pNext = &indexing;
+  }
+  if (buffer_device_address) {
+    address.pNext = supported.pNext;
+    supported.pNext = &address;
+  }
+  if (dynamic_rendering) {
+    rendering.pNext = supported.pNext;
+    supported.pNext = &rendering;
+  }
+  features2(device, &supported);
+  if (descriptor_indexing && !indexing.runtimeDescriptorArray) add("runtimeDescriptorArray");
+  if (descriptor_indexing && !indexing.descriptorBindingPartiallyBound) {
+    add("descriptorBindingPartiallyBound");
+  }
+  if (buffer_device_address && !address.bufferDeviceAddress) add("bufferDeviceAddress");
+  if (dynamic_rendering && !rendering.dynamicRendering) add("dynamicRendering");
+  const VkPhysicalDeviceFeatures& core = supported.features;
+  if (!core.shaderInt64) add("shaderInt64");
+  if (!core.depthClamp) add("depthClamp");
+  if (!core.sampleRateShading) add("sampleRateShading");
+  if (!core.independentBlend) add("independentBlend");
+  return missing;
+}
+
 // Uses only functions from the selected loader, never this proxy's exports.
 // A custom selection requires Vulkan 1.2 driver identity support. RP6/T30
 // supports this; failing explicitly is safer than guessing from a GPU name.
@@ -267,6 +363,12 @@ bool VerifyInstance(VkInstance instance, uint32_t requested_api,
         return false;
       }
     }
+    const std::string missing =
+        MissingNativeRequirements(instance, devices[i], requested_api, basic);
+    if (!missing.empty()) {
+      __android_log_print(ANDROID_LOG_WARN, kTag, "%s cannot run the native renderer, missing: %s",
+                          basic.deviceName, missing.c_str());
+    }
     if (i) devices_json += ",";
     devices_json += "{\"name\":" + Quote(basic.deviceName) +
                     ",\"api_version\":" + std::to_string(basic.apiVersion) +
@@ -275,7 +377,9 @@ bool VerifyInstance(VkInstance instance, uint32_t requested_api,
                     ",\"device_id\":" + std::to_string(basic.deviceID) +
                     ",\"driver_id\":" + std::to_string(driver.driverID) +
                     ",\"driver_name\":" + Quote(driver.driverName) +
-                    ",\"driver_info\":" + Quote(driver.driverInfo) + "}";
+                    ",\"driver_info\":" + Quote(driver.driverInfo) +
+                    ",\"native_ready\":" + (missing.empty() ? "true" : "false") +
+                    ",\"missing\":" + Quote(missing) + "}";
   }
   devices_json += "]";
   return true;
@@ -479,11 +583,17 @@ EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance
     return reinterpret_cast<PFN_vkVoidFunction>(&vkCreateInstance);
   if (std::strcmp(name, "vkDestroyInstance") == 0)
     return reinterpret_cast<PFN_vkVoidFunction>(&vkDestroyInstance);
+  // Device functions must come through the proxy for the dynamic rendering
+  // emulation to see them.
+  if (std::strcmp(name, "vkGetDeviceProcAddr") == 0)
+    return reinterpret_cast<PFN_vkVoidFunction>(&vkGetDeviceProcAddr);
+  if (const auto hook = dynamic_rendering::InterceptInstanceProc(instance, name, g_get)) return hook;
   return real;
 }
 
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
   if (!g_ready.load(std::memory_order_acquire)) return nullptr;
+  if (const auto hook = dynamic_rendering::InterceptDeviceProc(device, name)) return hook;
   const auto fn = reinterpret_cast<PFN_vkGetDeviceProcAddr>(dlsym(g_loader, "vkGetDeviceProcAddr"));
   return fn ? fn(device, name) : nullptr;
 }

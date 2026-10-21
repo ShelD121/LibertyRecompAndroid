@@ -111,10 +111,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   VkPhysicalDeviceFeatures supported_features = {};
   ifn.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
 
+  // Liberty native shaders need Vulkan 1.2 functionality. A Vulkan 1.1 device
+  // can provide it through the extensions promoted to 1.2 (the stock ARM
+  // Mali-G610 driver of Android 12 reports 1.1 but has nearly all of them);
+  // whether it does is checked once the extensions and features are known.
   if (with_native_shader_support &&
-      properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+      properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 1, 0)) {
     REXLOG_WARN(
-        "Vulkan device '{}' exposes API {}.{}, but Liberty native shaders require Vulkan 1.2",
+        "Vulkan device '{}' exposes API {}.{}, but Liberty native shaders require Vulkan 1.1 "
+        "with the Vulkan 1.2 extensions, or Vulkan 1.2",
         properties.deviceName, VK_VERSION_MAJOR(properties.apiVersion),
         VK_VERSION_MINOR(properties.apiVersion));
     return nullptr;
@@ -306,6 +311,37 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_spirv_1_4, 1, 2)
     }
   }
+  // Vulkan 1.2 functionality, enabled explicitly through the extensions
+  // promoted to 1.2 when the device only reports Vulkan 1.1.
+  bool ext_1_2_KHR_shader_float16_int8 = false;
+  bool ext_1_2_EXT_scalar_block_layout = false;
+  bool ext_1_2_KHR_uniform_buffer_standard_layout = false;
+  if (get_physical_device_properties2_supported &&
+      properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+    if (with_native_shader_support) {
+      // #162. Requires VK_KHR_maintenance3, core in 1.1.
+      XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(EXT_descriptor_indexing, 1, 2)
+      // #208.
+      XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_timeline_semaphore, 1, 2)
+      // #258.
+      XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_buffer_device_address, 1, 2)
+      // #83.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_shader_float16_int8, 1, 2)
+      // #15.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_sampler_mirror_clamp_to_edge, 1, 2)
+      // #198 and #237. Native shaders newer than SPIR-V 1.4 are lowered to
+      // 1.4 when the device does not support Vulkan 1.2 (see
+      // util::LowerSpirvVersion).
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_shader_float_controls, 1, 2)
+      XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION(KHR_spirv_1_4, 1, 2)
+    }
+    if (with_gpu_emulation) {
+      // #222.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(EXT_scalar_block_layout, 1, 2)
+      // #254.
+      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_uniform_buffer_standard_layout, 1, 2)
+    }
+  }
   if (!with_gpu_emulation && with_native_shader_support && get_physical_device_properties2_supported &&
       std::getenv("REX_VK_ROBUST") && std::getenv("REX_VK_ROBUST")[0] == '1') {
     XE_UI_VULKAN_STRUCT_EXTENSION(EXT_robustness2)
@@ -424,6 +460,28 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       features_1_2;
   VkPhysicalDeviceVulkan12Properties properties_1_2 = {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+  // The features of the extensions promoted to Vulkan 1.2, used instead of
+  // VkPhysicalDeviceVulkan12Features on a Vulkan 1.1 device.
+  VulkanFeatures<VkPhysicalDeviceTimelineSemaphoreFeaturesKHR,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR>
+      features_1_2_KHR_timeline_semaphore;
+  VulkanFeatures<VkPhysicalDeviceDescriptorIndexingFeaturesEXT,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT>
+      features_1_2_EXT_descriptor_indexing;
+  VkPhysicalDeviceDescriptorIndexingPropertiesEXT properties_1_2_EXT_descriptor_indexing = {
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES_EXT};
+  VulkanFeatures<VkPhysicalDeviceBufferDeviceAddressFeaturesKHR,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR>
+      features_1_2_KHR_buffer_device_address;
+  VulkanFeatures<VkPhysicalDeviceShaderFloat16Int8FeaturesKHR,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR>
+      features_1_2_KHR_shader_float16_int8;
+  VulkanFeatures<VkPhysicalDeviceScalarBlockLayoutFeaturesEXT,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT>
+      features_1_2_EXT_scalar_block_layout;
+  VulkanFeatures<VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR>
+      features_1_2_KHR_uniform_buffer_standard_layout;
   VulkanFeatures<VkPhysicalDeviceVulkan13Features,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES>
       features_1_3;
@@ -471,6 +529,28 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       features_1_2.Link(supported_features_2, device_create_info);
       properties_1_2.pNext = properties_2.pNext;
       properties_2.pNext = &properties_1_2;
+    } else {
+      if (device->extensions_.ext_1_2_KHR_timeline_semaphore) {
+        features_1_2_KHR_timeline_semaphore.Link(supported_features_2, device_create_info);
+      }
+      if (device->extensions_.ext_1_2_EXT_descriptor_indexing) {
+        features_1_2_EXT_descriptor_indexing.Link(supported_features_2, device_create_info);
+        properties_1_2_EXT_descriptor_indexing.pNext = properties_2.pNext;
+        properties_2.pNext = &properties_1_2_EXT_descriptor_indexing;
+      }
+      if (device->extensions_.ext_1_2_KHR_buffer_device_address) {
+        features_1_2_KHR_buffer_device_address.Link(supported_features_2, device_create_info);
+      }
+      if (ext_1_2_KHR_shader_float16_int8) {
+        features_1_2_KHR_shader_float16_int8.Link(supported_features_2, device_create_info);
+      }
+      if (ext_1_2_EXT_scalar_block_layout) {
+        features_1_2_EXT_scalar_block_layout.Link(supported_features_2, device_create_info);
+      }
+      if (ext_1_2_KHR_uniform_buffer_standard_layout) {
+        features_1_2_KHR_uniform_buffer_standard_layout.Link(supported_features_2,
+                                                             device_create_info);
+      }
     }
     if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
       features_1_3.Link(supported_features_2, device_create_info);
@@ -523,13 +603,68 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     ifn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features_2);
   }
 
+  // On a Vulkan 1.1 device, features_1_2 and properties_1_2 are not chained.
+  // They receive the values of the extension structures instead, so the checks
+  // and the enablement below are the same for both versions. The enabled
+  // values are copied back into the extension structures before
+  // vkCreateDevice.
+  const bool features_1_2_from_extensions =
+      properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 2, 0);
+  if (features_1_2_from_extensions) {
+    VkPhysicalDeviceVulkan12Features& supported_1_2 = features_1_2.supported;
+    supported_1_2.timelineSemaphore =
+        features_1_2_KHR_timeline_semaphore.supported.timelineSemaphore;
+    const VkPhysicalDeviceDescriptorIndexingFeaturesEXT& descriptor_indexing =
+        features_1_2_EXT_descriptor_indexing.supported;
+    supported_1_2.runtimeDescriptorArray = descriptor_indexing.runtimeDescriptorArray;
+    supported_1_2.descriptorBindingPartiallyBound =
+        descriptor_indexing.descriptorBindingPartiallyBound;
+    supported_1_2.descriptorBindingSampledImageUpdateAfterBind =
+        descriptor_indexing.descriptorBindingSampledImageUpdateAfterBind;
+    supported_1_2.descriptorBindingUpdateUnusedWhilePending =
+        descriptor_indexing.descriptorBindingUpdateUnusedWhilePending;
+    supported_1_2.descriptorBindingVariableDescriptorCount =
+        descriptor_indexing.descriptorBindingVariableDescriptorCount;
+    supported_1_2.bufferDeviceAddress =
+        features_1_2_KHR_buffer_device_address.supported.bufferDeviceAddress;
+    supported_1_2.shaderFloat16 = features_1_2_KHR_shader_float16_int8.supported.shaderFloat16;
+    supported_1_2.scalarBlockLayout =
+        features_1_2_EXT_scalar_block_layout.supported.scalarBlockLayout;
+    supported_1_2.uniformBufferStandardLayout =
+        features_1_2_KHR_uniform_buffer_standard_layout.supported.uniformBufferStandardLayout;
+    const VkPhysicalDeviceDescriptorIndexingPropertiesEXT& descriptor_indexing_properties =
+        properties_1_2_EXT_descriptor_indexing;
+    properties_1_2.maxUpdateAfterBindDescriptorsInAllPools =
+        descriptor_indexing_properties.maxUpdateAfterBindDescriptorsInAllPools;
+    properties_1_2.maxPerStageDescriptorUpdateAfterBindSamplers =
+        descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindSamplers;
+    properties_1_2.maxPerStageDescriptorUpdateAfterBindSampledImages =
+        descriptor_indexing_properties.maxPerStageDescriptorUpdateAfterBindSampledImages;
+    properties_1_2.maxPerStageUpdateAfterBindResources =
+        descriptor_indexing_properties.maxPerStageUpdateAfterBindResources;
+    properties_1_2.maxDescriptorSetUpdateAfterBindSamplers =
+        descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindSamplers;
+    properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages =
+        descriptor_indexing_properties.maxDescriptorSetUpdateAfterBindSampledImages;
+  }
+
+  if (with_native_shader_support && !device->extensions_.ext_1_2_KHR_spirv_1_4) {
+    REXLOG_WARN(
+        "Vulkan device '{}' (Vulkan {}.{}) lacks VK_KHR_spirv_1_4 required by Liberty native "
+        "shaders",
+        properties.deviceName, VK_VERSION_MAJOR(properties.apiVersion),
+        VK_VERSION_MINOR(properties.apiVersion));
+    return nullptr;
+  }
+
   if (with_native_shader_support &&
       (!features_1_2.supported.runtimeDescriptorArray ||
        !features_1_2.supported.descriptorBindingPartiallyBound ||
        !features_1_2.supported.bufferDeviceAddress)) {
     REXLOG_WARN(
         "Vulkan device '{}' lacks native shader features: runtimeDescriptorArray={}, "
-        "descriptorBindingPartiallyBound={}, bufferDeviceAddress={}",
+        "descriptorBindingPartiallyBound={}, bufferDeviceAddress={} (Vulkan 1.2 or "
+        "VK_EXT_descriptor_indexing and VK_KHR_buffer_device_address)",
         properties.deviceName, features_1_2.supported.runtimeDescriptorArray != VK_FALSE,
         features_1_2.supported.descriptorBindingPartiallyBound != VK_FALSE,
         features_1_2.supported.bufferDeviceAddress != VK_FALSE);
@@ -658,8 +793,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       queue_families, device->queue_family_graphics_compute_,
       with_native_shader_support && with_swapchain && !with_gpu_emulation &&
           REXCVAR_GET(vulkan_native_queue_separation),
-      properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0) &&
-          features_1_2.supported.timelineSemaphore,
+      features_1_2.supported.timelineSemaphore != VK_FALSE,
       properties_1_2.driverID == VK_DRIVER_ID_MOLTENVK ||
           properties_1_2_KHR_driver_properties.driverID == VK_DRIVER_ID_MOLTENVK);
   if (device->has_native_offscreen_queue()) {
@@ -788,7 +922,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   XE_UI_VULKAN_LIMIT(maxPerStageResources)
   XE_UI_VULKAN_LIMIT(maxDescriptorSetSamplers)
   XE_UI_VULKAN_LIMIT(maxDescriptorSetSampledImages)
-  if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+  if (device->extensions_.ext_1_2_EXT_descriptor_indexing) {
     XE_UI_VULKAN_PROPERTY_2(properties_1_2, maxUpdateAfterBindDescriptorsInAllPools)
     XE_UI_VULKAN_PROPERTY_2(properties_1_2, maxPerStageDescriptorUpdateAfterBindSamplers)
     XE_UI_VULKAN_PROPERTY_2(properties_1_2, maxPerStageDescriptorUpdateAfterBindSampledImages)
@@ -879,28 +1013,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     if (with_gpu_emulation || with_native_shader_support) {
       XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
     }
-    if (with_gpu_emulation) {
-      XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);
-    }
-    if (with_native_shader_support) {
-      XE_UI_VULKAN_FEATURE_2(features_1_2, shaderFloat16);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, runtimeDescriptorArray);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingPartiallyBound);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingSampledImageUpdateAfterBind);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingUpdateUnusedWhilePending);
-      // Vulkan uses descriptorBindingSampledImageUpdateAfterBind for sampler,
-      // combined-image-sampler and sampled-image descriptors; there is no
-      // separate VkPhysicalDeviceVulkan12Features sampler member.
-      device->properties_.descriptorBindingSamplerUpdateAfterBind =
-          features_1_2.supported.descriptorBindingSampledImageUpdateAfterBind;
-      XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingVariableDescriptorCount);
-      XE_UI_VULKAN_FEATURE_2(features_1_2, bufferDeviceAddress);
-    }
   } else {
     if (ext_1_2_KHR_sampler_mirror_clamp_to_edge) {
       XE_UI_VULKAN_FEATURE_IMPLIED(samplerMirrorClampToEdge)
     }
+  }
+  // On a Vulkan 1.1 device, features_1_2 holds the features of the extensions
+  // promoted to 1.2 (zero for the ones that are unavailable).
+  if (with_gpu_emulation) {
+    XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);
+  }
+  if (with_native_shader_support) {
+    XE_UI_VULKAN_FEATURE_2(features_1_2, shaderFloat16);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, runtimeDescriptorArray);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingPartiallyBound);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingSampledImageUpdateAfterBind);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingUpdateUnusedWhilePending);
+    // Vulkan uses descriptorBindingSampledImageUpdateAfterBind for sampler,
+    // combined-image-sampler and sampled-image descriptors; there is no
+    // separate VkPhysicalDeviceVulkan12Features sampler member.
+    device->properties_.descriptorBindingSamplerUpdateAfterBind =
+        features_1_2.supported.descriptorBindingSampledImageUpdateAfterBind;
+    XE_UI_VULKAN_FEATURE_2(features_1_2, descriptorBindingVariableDescriptorCount);
+    XE_UI_VULKAN_FEATURE_2(features_1_2, bufferDeviceAddress);
   }
 
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
@@ -1019,6 +1155,28 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
 #undef XE_UI_VULKAN_ENUM_PROPERTY_2
 #undef XE_UI_VULKAN_FEATURE_2
 
+  if (features_1_2_from_extensions) {
+    const VkPhysicalDeviceVulkan12Features& enabled_1_2 = features_1_2.enabled;
+    features_1_2_KHR_timeline_semaphore.enabled.timelineSemaphore = enabled_1_2.timelineSemaphore;
+    VkPhysicalDeviceDescriptorIndexingFeaturesEXT& descriptor_indexing =
+        features_1_2_EXT_descriptor_indexing.enabled;
+    descriptor_indexing.runtimeDescriptorArray = enabled_1_2.runtimeDescriptorArray;
+    descriptor_indexing.descriptorBindingPartiallyBound =
+        enabled_1_2.descriptorBindingPartiallyBound;
+    descriptor_indexing.descriptorBindingSampledImageUpdateAfterBind =
+        enabled_1_2.descriptorBindingSampledImageUpdateAfterBind;
+    descriptor_indexing.descriptorBindingUpdateUnusedWhilePending =
+        enabled_1_2.descriptorBindingUpdateUnusedWhilePending;
+    descriptor_indexing.descriptorBindingVariableDescriptorCount =
+        enabled_1_2.descriptorBindingVariableDescriptorCount;
+    features_1_2_KHR_buffer_device_address.enabled.bufferDeviceAddress =
+        enabled_1_2.bufferDeviceAddress;
+    features_1_2_KHR_shader_float16_int8.enabled.shaderFloat16 = enabled_1_2.shaderFloat16;
+    features_1_2_EXT_scalar_block_layout.enabled.scalarBlockLayout = enabled_1_2.scalarBlockLayout;
+    features_1_2_KHR_uniform_buffer_standard_layout.enabled.uniformBufferStandardLayout =
+        enabled_1_2.uniformBufferStandardLayout;
+  }
+
   // Create the device.
 
   const VkResult device_create_result =
@@ -1052,9 +1210,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
 #include <rex/ui/vulkan/functions/device_1_1_khr_bind_memory2.inc>
 #include <rex/ui/vulkan/functions/device_1_1_khr_get_memory_requirements2.inc>
+#include <rex/ui/vulkan/functions/device_1_1_khr_maintenance3.inc>
   }
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
-#include <rex/ui/vulkan/functions/device_1_2.inc>
+#include <rex/ui/vulkan/functions/device_1_2_khr_buffer_device_address.inc>
+#include <rex/ui/vulkan/functions/device_1_2_khr_timeline_semaphore.inc>
   }
   if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
 #include <rex/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc>
@@ -1073,6 +1233,14 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     }
     if (device->extensions_.ext_1_1_KHR_bind_memory2) {
 #include <rex/ui/vulkan/functions/device_1_1_khr_bind_memory2.inc>
+    }
+  }
+  if (properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+    if (device->extensions_.ext_1_2_KHR_buffer_device_address) {
+#include <rex/ui/vulkan/functions/device_1_2_khr_buffer_device_address.inc>
+    }
+    if (device->extensions_.ext_1_2_KHR_timeline_semaphore) {
+#include <rex/ui/vulkan/functions/device_1_2_khr_timeline_semaphore.inc>
     }
   }
   if (properties.apiVersion < VK_MAKE_API_VERSION(0, 1, 3, 0)) {
