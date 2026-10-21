@@ -11,7 +11,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_link_options("-Wl,-z,max-page-size=16384")
 add_subdirectory(vendor/libadrenotools)
 
-add_library(vulkan SHARED driver_proxy.cpp)
+add_library(vulkan SHARED driver_proxy.cpp dynamic_rendering.cpp)
 target_compile_definitions(vulkan PRIVATE VK_NO_PROTOTYPES)
 target_compile_options(vulkan PRIVATE -Wall -Wextra -Werror -fvisibility=hidden)
 target_link_libraries(vulkan PRIVATE adrenotools log dl)

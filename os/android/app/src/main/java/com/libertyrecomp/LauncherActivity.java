@@ -320,7 +320,7 @@ public class LauncherActivity extends Activity {
 
         right.addView(text("Turnip packages for AdrenoTools (a zip with a .so and meta.json) "
                 + "work here. The game needs Vulkan 1.2, or Vulkan 1.1 with the Vulkan 1.2 "
-                + "extensions and dynamic rendering; if a driver cannot start, the game "
+                + "extensions; if a driver cannot start, the game "
                 + "falls back to the device's own driver.", 12, R.color.picker_muted),
                 matchWrap(dp(10)));
 

@@ -158,8 +158,8 @@ final class DriverBridge {
             if (device == null) continue;
             long api = device.optLong("api_version", 0);
             if (device.has("native_ready")) {
-                // Vulkan 1.2, or Vulkan 1.1 with the extensions promoted to 1.2,
-                // plus dynamic rendering - checked by the proxy.
+                // Vulkan 1.2, or Vulkan 1.1 with the extensions promoted to 1.2 -
+                // checked by the proxy, which emulates dynamic rendering if needed.
                 if (device.optBoolean("native_ready", false)) return null;
             } else if (api >= VULKAN_1_2) {
                 return null;

@@ -5,6 +5,7 @@
 #include <adrenotools/driver.h>
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
+#include "dynamic_rendering.h"
 #include <sys/stat.h>
 #include <limits.h>
 
@@ -22,6 +23,7 @@
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
 EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo*, const VkAllocationCallbacks*, VkInstance*);
 EXPORT VKAPI_ATTR void VKAPI_CALL vkDestroyInstance(VkInstance, const VkAllocationCallbacks*);
+EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char*);
 
 namespace {
 constexpr const char* kTag = "LibertyDriver";
@@ -195,7 +197,7 @@ bool ProbeSystemIdentity(std::string& identity) {
 
 // What the native renderer needs from a device that the API version alone
 // does not say (mirrors VulkanDevice::CreateIfSupported with native shaders and
-// dynamic rendering). Vulkan 1.2 functionality may come from the extensions
+// dynamic rendering, which the proxy emulates on drivers without it). Vulkan 1.2 functionality may come from the extensions
 // promoted to 1.2 on a Vulkan 1.1 device - the stock ARM Mali-G610 driver of
 // Android 12 reports 1.1 but has nearly all of them. Returns the missing items,
 // comma-separated; empty when the device is usable.
@@ -238,13 +240,18 @@ std::string MissingNativeRequirements(VkInstance instance, VkPhysicalDevice devi
   const bool descriptor_indexing = core_1_2 || has(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
   const bool buffer_device_address = core_1_2 || has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
   const bool dynamic_rendering = core_1_3 || has(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  // Without it the proxy translates dynamic rendering into render passes.
+  const bool dynamic_rendering_emulated =
+      !dynamic_rendering && dynamic_rendering::Emulated(instance, device, g_get);
   if (!descriptor_indexing) add(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
   if (!buffer_device_address) add(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
   if (!core_1_2 && !has(VK_KHR_SPIRV_1_4_EXTENSION_NAME)) add(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
   if (!core_1_2 && !has(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) {
     add(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
   }
-  if (!dynamic_rendering) add(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  if (!dynamic_rendering && !dynamic_rendering_emulated) {
+    add(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  }
 
   // The promoted extension structures are valid on Vulkan 1.2+ devices too.
   VkPhysicalDeviceFeatures2 supported{};
@@ -576,11 +583,17 @@ EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance
     return reinterpret_cast<PFN_vkVoidFunction>(&vkCreateInstance);
   if (std::strcmp(name, "vkDestroyInstance") == 0)
     return reinterpret_cast<PFN_vkVoidFunction>(&vkDestroyInstance);
+  // Device functions must come through the proxy for the dynamic rendering
+  // emulation to see them.
+  if (std::strcmp(name, "vkGetDeviceProcAddr") == 0)
+    return reinterpret_cast<PFN_vkVoidFunction>(&vkGetDeviceProcAddr);
+  if (const auto hook = dynamic_rendering::InterceptInstanceProc(instance, name, g_get)) return hook;
   return real;
 }
 
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
   if (!g_ready.load(std::memory_order_acquire)) return nullptr;
+  if (const auto hook = dynamic_rendering::InterceptDeviceProc(device, name)) return hook;
   const auto fn = reinterpret_cast<PFN_vkGetDeviceProcAddr>(dlsym(g_loader, "vkGetDeviceProcAddr"));
   return fn ? fn(device, name) : nullptr;
 }
