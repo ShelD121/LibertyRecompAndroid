@@ -1,0 +1,136 @@
+name: Android APK
+
+# Builds the debug-signed APK the way docs/android/BUILDING.md describes it:
+# Git Bash on Windows, NDK r29, setup_repo.py, the driver proxy, the native
+# build with STRIP=1, then Gradle. The APK is uploaded as a workflow artifact.
+
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE*'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE*'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dynamic-rendering-emulation:
+    name: Dynamic rendering emulation (lavapipe, validation layers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install a Vulkan driver, the validation layer and glslang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ glslang-tools libvulkan-dev mesa-vulkan-drivers \
+            vulkan-validationlayers
+
+      - name: Run the emulation test
+        run: bash os/android/native/tests/run_dynamic_rendering_test.sh
+
+  apk:
+    name: APK (arm64-v8a, debug-signed)
+    runs-on: windows-latest
+    # The first native build compiles about 90 large generated sources.
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      NDK_VER: '29.0.14206865'
+      STRIP: '1'
+
+    steps:
+      - name: Allow long paths in Git
+        run: git config --global core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install CMake and Ninja
+        run: python -m pip install 'cmake>=3.31,<3.32' ninja
+
+      - name: Install Android SDK platform 35 and NDK r29
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+          1..20 | ForEach-Object { 'y' } | & $sdkmanager --licenses | Out-Null
+          & $sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;$env:NDK_VER"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # os/android/scripts/env.sh expects POSIX paths, as Git Bash gives them
+      # for %LOCALAPPDATA%\Android\Sdk on a workstation.
+      - name: Export SDK and JDK paths for the build scripts
+        run: |
+          echo "ANDROID_HOME=$(cygpath -u "$ANDROID_HOME")" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$(cygpath -u "$ANDROID_HOME")" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$(cygpath -u "$JAVA_HOME")" >> "$GITHUB_ENV"
+
+      - name: Show toolchain versions
+        run: |
+          cmake --version | head -1
+          ninja --version
+          python --version
+          "$JAVA_HOME/bin/java" -version
+          ls "$ANDROID_HOME/ndk"
+          df -h "$GITHUB_WORKSPACE" || true
+
+      - name: Fetch the pinned dependencies and apply the source patches
+        run: python tools/setup_repo.py
+
+      - name: Build the Vulkan driver proxy and the libadrenotools hooks
+        run: bash os/android/scripts/build_driver_proxy.sh
+
+      - name: Build the game, the runtime and the renderer
+        run: bash os/android/scripts/build_native.sh
+
+      - name: Package the APK
+        run: |
+          rm -f os/android/app/build/outputs/apk/debug/app-debug.apk
+          bash os/android/scripts/build_apk.sh
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibertyRecomp-android-${{ github.sha }}
+          path: os/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          compression-level: 0
