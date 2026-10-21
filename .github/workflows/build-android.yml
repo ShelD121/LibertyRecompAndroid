@@ -101,6 +101,9 @@ jobs:
       - name: Export SDK and JDK paths for the build scripts
         run: |
           echo "ANDROID_HOME=$(cygpath -u "$ANDROID_HOME")" >> "$GITHUB_ENV"
+          # The runner presets ANDROID_NDK to its own NDK (27.x), which lacks
+          # std::jthread; env.sh keeps an existing value.
+          echo "ANDROID_NDK=$(cygpath -u "$ANDROID_HOME")/ndk/$NDK_VER" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$(cygpath -u "$ANDROID_HOME")" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$(cygpath -u "$JAVA_HOME")" >> "$GITHUB_ENV"
 
@@ -111,6 +114,7 @@ jobs:
           python --version
           "$JAVA_HOME/bin/java" -version
           ls "$ANDROID_HOME/ndk"
+          test -d "$ANDROID_NDK" && echo "ANDROID_NDK=$ANDROID_NDK"
           df -h "$GITHUB_WORKSPACE" || true
 
       - name: Fetch the pinned dependencies and apply the source patches
